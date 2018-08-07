@@ -105,6 +105,179 @@ def validate_model(sess, x, y, model):
     print('Base accuracy of the target model on legitimate images: ' + str(accuracy))
 
 def attack_classifier(sess, x, y, model, x_test, y_test, attack_method="fgsm", target=None, batch_size=128):
+    
+    if attack_method == "fgsm":
+        from cleverhans.attacks import FastGradientMethod
+        params = {'eps': 8/255,
+                  'clip_min': 0.,
+                  'clip_max': 1.
+                 }
+        if target is not None:
+            params["y_target"] = tf.constant(np.repeat(np.eye(10)[target:target+1], batch_size, axis = 0))
+        method = FastGradientMethod(model, sess=sess)
+        
+    elif attack_method == "basic_iterative":
+        from cleverhans.attacks import BasicIterativeMethod
+        params = {'eps':8/255,
+                  'eps_iter':1/255,
+                  'nb_iter': 10,
+                  'clip_min': 0.,
+                  'clip_max': 1.
+                 }
+        if target is not None:
+            params["y_target"] = tf.constant(np.repeat(np.eye(10)[target:target+1], batch_size, axis = 0))
+        method = BasicIterativeMethod(model,sess = sess)
+        
+    elif attack_method == "momentum_iterative":
+        from cleverhans.attacks import MomentumIterativeMethod
+        params = {'eps':8/255,
+                  'eps_iter':1/255,
+                  'nb_iter': 10,
+                  'clip_min': 0.,
+                  'clip_max': 1.
+                 }
+        if target is not None:
+            params["y_target"] = tf.constant(np.repeat(np.eye(10)[target:target+1], batch_size, axis = 0))
+        method = MomentumIterativeMethod(model,sess = sess)
+        
+    elif attack_method == "saliency":
+        from cleverhans.attacks import SaliencyMapMethod
+        params = {'theta':8/255,
+                  'gamma':0.1,
+                  'clip_min': 0.,
+                  'clip_max': 1.
+                 }
+        assert target is None
+        method = SaliencyMapMethod(model,sess = sess)
+        
+    elif attack_method == "virtual":
+        from cleverhans.attacks import VirtualAdversarialMethod
+        params = {'eps':8/255,
+                  'num_iterations':10,
+                  'xi' :1e-6,
+                  'clip_min': 0.,
+                  'clip_max': 1.
+                 }
+        assert target is None
+        method = VirtualAdversarialMethod(model,sess = sess)
+        
+    elif attack_method == "cw":
+        from cleverhans.attacks import CarliniWagnerL2
+        params = {
+            "confidence":0,
+            "batch_size":128,
+            "learning_rate":1e-4,
+            "binary_search_steps":10,
+            "max_iterations":1000,
+            "abort_early": True,
+            "initial_const":1e-2,
+            "clip_min":0,
+            "clip_max":1
+        }
+        if target is not None:
+            params["y_target"] = tf.constant(np.repeat(np.eye(10)[target:target+1], batch_size, axis = 0))
+        method = CarliniWagnerL2(model,sess = sess)
+    
+    elif attack_method == "elastic_net":
+        from cleverhans.attacks import ElasticNetMethod
+        params = {
+            "fista": "FISTA",
+            "beta": 0.1,
+            "decision_rule":"EN",
+            "confidence":0,
+            "batch_size":128,
+            "learning_rate":1e-4,
+            "binary_search_steps":10,
+            "max_iterations":1000,
+            "abort_early": True,
+            "initial_const":1e-2,
+            "clip_min":0,
+            "clip_max":1
+        }
+        if target is not None:
+            params["y_target"] = tf.constant(np.repeat(np.eye(10)[target:target+1], batch_size, axis = 0))
+        method = ElasticNetMethod(model,sess = sess)
+    
+    elif attack_method == "deepfool":
+        from cleverhans.attacks import DeepFool
+        params = {
+            "nb_candidate":10,
+            "overshoot":1e-3,
+            "max_iter":100,
+            "nb_classes":10,
+            "clip_min":0,
+            "clip_max":1
+        }
+        assert target is None
+        method = DeepFool(model,sess = sess)
+        
+    elif attack_method == "lbfgs":
+        from cleverhans.attacks import LBFGS
+        params = {
+            'batch_size':128,
+            "binary_search_steps":10,
+            "max_iterations":1000,
+            "initial_const":1e-2,
+            'clip_min': 0.,
+            'clip_max': 1.
+        }
+        assert target is not None
+        params["y_target"] = tf.constant(np.repeat(np.eye(10)[target:target+1], batch_size, axis = 0))
+        method = LBFGS(model,sess = sess)
+    
+    elif attack_method == "madry":
+        from cleverhans.attacks import MadryEtAl
+        params = {'eps':8/255,
+                  'eps_iter':1/255,
+                  'nb_iter':10,
+                  'ord':np.inf,
+                  'clip_min': 0.,
+                  'clip_max': 1.
+                 }
+        if target is not None:
+            params["y_target"] = tf.constant(np.repeat(np.eye(10)[target:target+1], batch_size, axis = 0))
+        method = MadryEtAl(model, sess = sess)
+        
+    elif attack_method == "SPSA":
+        from cleverhans.attacks import SPSA
+        params = {
+            'epsilon':1/255,
+            'num_steps':10,
+            'is_targeted':False,
+            'early_stop_loss_threshold':None,
+            'learning_rate':0.01,
+            'delta':0.01,
+            'batch_size':128,
+            'spsa_iters':1,
+            'is_debug':False
+        }
+        if target is not None:
+            params["y_target"] = tf.constant(np.repeat(np.eye(10)[target:target+1], batch_size, axis = 0))
+            params["is_targeted"] = True
+        method = SPSA(model, sess = sess)
+        
+    else:
+        raise ValueError("Can not recognize this attack method: %s" % attack_method)
+    
+    adv_x = method.generate(x, **params)
+    num_batch = x_test.shape[0] // batch_size
+    adv_imgs = []
+    for i in range(num_batch):
+        if (i + 1)*batch_size >=  x_test.shape[0]:
+            x_feed = x_test[i*batch_size:]
+            y_feed = y_test[i*batch_size:]
+        else:
+            x_feed = x_test[i*batch_size:(i+1)*batch_size]
+            y_feed = y_test[i*batch_size:(i+1)*batch_size]
+            
+        adv_img = sess.run(adv_x, feed_dict={x: x_feed, y: y_feed})
+        adv_imgs.append(adv_img)
+        
+    adv_imgs = np.concatenate(adv_imgs, axis=0)
+    return adv_imgs
+
+
+def attack_classifier(sess, x, y, model, x_test, y_test, attack_method="fgsm", target=None, batch_size=128):
 
 if __name__ == '__main__':
     #train_cifar10_classifier('simple', 50)
