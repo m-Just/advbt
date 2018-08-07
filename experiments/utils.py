@@ -121,7 +121,7 @@ def validate_model(sess, x, y, model, x_test, y_test):
     accuracy = model_eval(sess, x, y, predictions, X_test=x_test, Y_test=y_test, args=eval_params)
     return accuracy
 
-def attack_classifier(sess, x, y, model, x_test, y_test, attack_method="fgsm", target=None, batch_size=128):
+def attack_classifier(sess, x, model, x_test, attack_method="fgsm", target=None, batch_size=128):
     
     if attack_method == "fgsm":
         from cleverhans.attacks import FastGradientMethod
@@ -282,15 +282,15 @@ def attack_classifier(sess, x, y, model, x_test, y_test, attack_method="fgsm", t
     adv_imgs = []
     for i in range(num_batch):
         x_feed = x_test[i*batch_size:(i+1)*batch_size]
-        y_feed = y_test[i*batch_size:(i+1)*batch_size]
+        #y_feed = y_test[i*batch_size:(i+1)*batch_size]
             
-        adv_img = sess.run(adv_x, feed_dict={x: x_feed, y: y_feed})
+        adv_img = sess.run(adv_x, feed_dict={x: x_feed})
         adv_imgs.append(adv_img)
         
     adv_imgs = np.concatenate(adv_imgs, axis=0)
     return adv_imgs
 
-def backtracking(sess, x, y, model, x_test, y_test, params, batch_size=128):
+def backtracking(sess, x, model, x_test, params, batch_size=128):
     from cleverhans.attacks import BasicIterativeMethod
     method = BasicIterativeMethod(model, sess=sess)
 
@@ -299,9 +299,9 @@ def backtracking(sess, x, y, model, x_test, y_test, params, batch_size=128):
     adv_imgs = []
     for i in range(num_batch):
         x_feed = x_test[i*batch_size:(i+1)*batch_size]
-        y_feed = y_test[i*batch_size:(i+1)*batch_size]
+        #y_feed = y_test[i*batch_size:(i+1)*batch_size]
             
-        adv_img = sess.run(adv_x, feed_dict={x: x_feed, y: y_feed})
+        adv_img = sess.run(adv_x, feed_dict={x: x_feed})
         adv_imgs.append(adv_img)
 
     adv_imgs = np.concatenate(adv_imgs, axis = 0)
@@ -323,7 +323,7 @@ if __name__ == '__main__':
     print('Base accuracy of the target model on legitimate images: ' + str(accuracy))
 
     target = 0
-    adv_imgs = attack_classifier(sess, x, y, model, x_filtered, y_filtered, attack_method='basic_iterative',
+    adv_imgs = attack_classifier(sess, x, model, x_filtered, attack_method='basic_iterative',
                                  target=target)
     print(np.min(adv_imgs - x_filtered))
     print(np.max(x_filtered))
@@ -337,6 +337,6 @@ if __name__ == '__main__':
                         'clip_min': 0.,
                         'clip_max': 1.,
                         'ord': np.inf}
-    result_imgs = backtracking(sess, x, y, model, adv_imgs, y_filtered, backtrack_params)
+    result_imgs = backtracking(sess, x, model, adv_imgs, backtrack_params)
     accuracy = validate_model(sess, x, y, model, result_imgs, y_filtered)
     print('Base accuracy of the target model on recovered images: ' + str(accuracy))
