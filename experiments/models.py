@@ -31,6 +31,18 @@ class MLP(Model):
             layer.set_input_shape(input_shape)
             input_shape = layer.get_output_shape()
 
+    # this overrides cleverhans method
+    def get_layer_names(self):
+        """
+        :return: a list of names for the layers that can be exposed by this
+        model abstraction.
+        """
+
+        if hasattr(self, 'layer_names'):
+            return self.layer_names
+
+        raise NotImplementedError('`get_layer_names` not implemented.')
+
     def fprop(self, x, set_ref=False):
         states = []
         for layer in self.layers:
@@ -129,6 +141,20 @@ class ReLU(Layer):
     def get_params(self):
         return []
 
+class Dropout(Layer):
+    
+    def __init__(self, keep_prob):
+        self.keep_prob = keep_prob
+
+    def set_input_shape(self, shape):
+        self.input_shape = shape
+        self.output_shape = shape
+
+    def fprop(self, x):
+        return tf.nn.dropout(x, self.keep_prob)
+
+    def get_params(self):
+        return []
 
 class Softmax(Layer):
 
@@ -267,7 +293,8 @@ class ResnetBlock(Layer):
         return params
 
 def make_simple_cnn(num_filters=64, num_classes=10,
-                   input_shape=(None, 32, 32, 3)):
+                    input_shape=(None, 32, 32, 3), keep_prob=None):
+    if keep_prob is None: keep_prob = 1
     layers = [Conv2D(num_filters, (3, 3), (1, 1), "VALID"),
               ReLU(),
               Conv2D(num_filters, (3, 3), (1, 1), "VALID"),
@@ -282,8 +309,10 @@ def make_simple_cnn(num_filters=64, num_classes=10,
 
               Flatten(),
               Linear(num_filters * 4),
+              Dropout(keep_prob),
               ReLU(),
               Linear(num_filters * 4),
+              Dropout(keep_prob),
               ReLU(),
               Linear(num_classes),
               Softmax()]
