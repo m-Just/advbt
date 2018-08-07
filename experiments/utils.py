@@ -57,11 +57,14 @@ def filter_data(sess, x, y, model, x_test, y_test, target=None, batch_size=128, 
     # only take the ones that are correctly classified by the target model
     x_filtered = []
     y_filtered = []
-    for i in range(eval_size):
+    counter = 0
+    for i in range(len(x_test)):
         correct = sess.run(eval_single, feed_dict={x: [x_test[i]], y: [y_test[i]]})
         if np.argmax(y_test[i]) != target and correct:
             x_filtered.append([x_test[i]])
             y_filtered.append([y_test[i]])
+            counter += 1
+        if counter >= eval_size: break
 
     return np.concatenate(x_filtered, axis=0), np.concatenate(y_filtered, axis=0)
 
@@ -136,7 +139,8 @@ def attack_classifier(sess, x, y, model, x_test, y_test, attack_method="fgsm", t
                   'eps_iter': 1/255,
                   'nb_iter': 10,
                   'clip_min': 0.,
-                  'clip_max': 1.
+                  'clip_max': 1.,
+                  'ord': np.inf
                  }
         if target is not None:
             params["y_target"] = tf.constant(np.repeat(np.eye(10)[target:target+1], batch_size, axis = 0))
@@ -277,12 +281,8 @@ def attack_classifier(sess, x, y, model, x_test, y_test, attack_method="fgsm", t
     num_batch = x_test.shape[0] // batch_size
     adv_imgs = []
     for i in range(num_batch):
-        if (i + 1)*batch_size >=  x_test.shape[0]:
-            x_feed = x_test[i*batch_size:]
-            y_feed = y_test[i*batch_size:]
-        else:
-            x_feed = x_test[i*batch_size:(i+1)*batch_size]
-            y_feed = y_test[i*batch_size:(i+1)*batch_size]
+        x_feed = x_test[i*batch_size:(i+1)*batch_size]
+        y_feed = y_test[i*batch_size:(i+1)*batch_size]
             
         adv_img = sess.run(adv_x, feed_dict={x: x_feed, y: y_feed})
         adv_imgs.append(adv_img)
@@ -298,12 +298,8 @@ def backtracking(sess, x, y, model, x_test, y_test, params, batch_size=128):
     num_batch = x_test.shape[0] // batch_size
     adv_imgs = []
     for i in range(num_batch):
-        if (i + 1)*batch_size >=  x_test.shape[0]:
-            x_feed = x_test[i*batch_size:]
-            y_feed = y_test[i*batch_size:]
-        else:
-            x_feed = x_test[i*batch_size:(i+1)*batch_size]
-            y_feed = y_test[i*batch_size:(i+1)*batch_size]
+        x_feed = x_test[i*batch_size:(i+1)*batch_size]
+        y_feed = y_test[i*batch_size:(i+1)*batch_size]
             
         adv_img = sess.run(adv_x, feed_dict={x: x_feed, y: y_feed})
         adv_imgs.append(adv_img)
@@ -326,15 +322,21 @@ if __name__ == '__main__':
     accuracy = validate_model(sess, x, y, model, x_filtered, y_filtered)
     print('Base accuracy of the target model on legitimate images: ' + str(accuracy))
 
-    adv_imgs = attack_classifier(sess, x, y, model, x_filtered, y_filtered, attack_method='cw')
+    target = 0
+    adv_imgs = attack_classifier(sess, x, y, model, x_filtered, y_filtered, attack_method='basic_iterative',
+                                 target=target)
+    print(np.min(adv_imgs - x_filtered))
+    print(np.max(x_filtered))
+    print(np.max(adv_imgs))
     accuracy = validate_model(sess, x, y, model, adv_imgs, y_filtered)
     print('Base accuracy of the target model on adversarial images: ' + str(accuracy))
 
     backtrack_params = {'eps': 8/255.,
-                        'eps_iter': 1/255.,
-                        'nb_iter': 10,
+                        'eps_iter': 8/255.,
+                        'nb_iter': 1,
                         'clip_min': 0.,
-                        'clip_max': 1.}
+                        'clip_max': 1.,
+                        'ord': np.inf}
     result_imgs = backtracking(sess, x, y, model, adv_imgs, y_filtered, backtrack_params)
     accuracy = validate_model(sess, x, y, model, result_imgs, y_filtered)
     print('Base accuracy of the target model on recovered images: ' + str(accuracy))
