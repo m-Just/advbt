@@ -340,3 +340,37 @@ def make_resnet(depth=32, num_classes=10, input_shape=(None, 32, 32, 3)):
 
     model = MLP(layers, input_shape)
     return model
+
+def make_vgg16(num_classes=1001, input_shape=(None, 224, 224, 3), keep_prob=None):
+    if keep_prob is None: keep_prob = 1
+    layers = [Conv2D(64, (3, 3), (1, 1), 'SAME'), ReLU(),
+              Conv2D(64, (3, 3), (1, 1), 'SAME'), ReLU(),
+              Pooling('max'),
+
+              Conv2D(128, (3, 3), (1, 1), 'SAME'), ReLU(),
+              Conv2D(128, (3, 3), (1, 1), 'SAME'), ReLU(),
+              Pooling('max'),
+
+              Conv2D(256, (3, 3), (1, 1), 'SAME'), ReLU(),
+              Conv2D(256, (3, 3), (1, 1), 'SAME'), ReLU(),
+              Conv2D(256, (3, 3), (1, 1), 'SAME'), ReLU(),
+              Pooling('max'),
+
+              Conv2D(512, (3, 3), (1, 1), 'SAME'), ReLU(),
+              Conv2D(512, (3, 3), (1, 1), 'SAME'), ReLU(),
+              Conv2D(512, (3, 3), (1, 1), 'SAME'), ReLU(),
+              Pooling('max'),
+
+              Conv2D(512, (3, 3), (1, 1), 'SAME'), ReLU(),
+              Conv2D(512, (3, 3), (1, 1), 'SAME'), ReLU(),
+              Conv2D(512, (3, 3), (1, 1), 'SAME'), ReLU(),
+              Pooling('max'),
+
+              Flatten(),
+              Linear(4096), ReLU(), Dropout(keep_prob),
+              Linear(4096), ReLU(), Dropout(keep_prob),
+              Linear(num_classes),
+              Softmax()]
+
+    model = MLP(layers, input_shape)
+    return model
