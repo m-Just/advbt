@@ -341,7 +341,7 @@ def make_resnet(depth=32, num_classes=10, input_shape=(None, 32, 32, 3)):
     model = MLP(layers, input_shape)
     return model
 
-def make_vgg16(num_classes=1000, input_shape=(None, 224, 224, 3), keep_prob=None):
+def make_vgg16(num_classes=1001, input_shape=(None, 224, 224, 3), keep_prob=None):
     if keep_prob is None: keep_prob = 1
     layers = [Conv2D(64, (3, 3), (1, 1), 'SAME'), ReLU(),
               Conv2D(64, (3, 3), (1, 1), 'SAME'), ReLU(),
