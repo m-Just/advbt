@@ -9,12 +9,15 @@ import numpy as np
 import tensorflow as tf
 
 import sys; sys.path.append('../cleverhans')
-from cleverhans.utils_tf import train, model_eval, model_loss
+from cleverhans.utils_tf import train, model_eval, model_loss, tf_model_load
 from cleverhans.utils import set_log_level
 from cleverhans.loss import LossCrossEntropy
 import scipy as sc
 
-from models import make_simple_cnn, make_resnet
+from models import make_simple_cnn, make_resnet, make_vgg16
+
+set_log_level(logging.DEBUG)
+tf.set_random_seed(1822)
 
 def load_cifar10(augmented=False):
     import keras
@@ -48,8 +51,6 @@ def load_cifar10(augmented=False):
         return (x_train, y_train), (x_test, y_test)
 
 def train_cifar10_classifier(model_name, nb_epochs):
-    set_log_level(logging.DEBUG)
-    tf.set_random_seed(1822)
     rng = np.random.RandomState([2018, 8, 7])
 
     (x_train, y_train), (x_test, y_test) = load_cifar10(augmented=False)
@@ -93,4 +94,26 @@ def train_cifar10_classifier(model_name, nb_epochs):
     model_savename = 'cifar10_%s_model_epoch%d' % (model_name, nb_epochs)
     saver.save(sess, os.path.join(savedir, model_savename))
 
-train_cifar10_classifier('simple', 50)
+def validate_model(sess, x, y, model):
+    '''
+    Make sure the model load properly by running it against the test set
+    '''
+    (x_train, y_train), (x_test, y_test) = load_cifar10(augmented=False)
+    predictions = model.get_probs(x)
+    eval_params = {'batch_size': 128}
+    accuracy = model_eval(sess, x, y, predictions, X_test=x_test, Y_test=y_test, args=eval_params)
+    print('Base accuracy of the target model on legitimate images: ' + str(accuracy))
+
+def attack_classifier(sess, x, y, model, x_test, y_test, attack_method="fgsm", target=None, batch_size=128):
+
+if __name__ == '__main__':
+    #train_cifar10_classifier('simple', 50)
+
+    x = tf.placeholder(tf.float32, shape=(None, 32, 32, 3))
+    y = tf.placeholder(tf.float32, shape=(None, 10))
+    model = make_simple_cnn()
+    sess = tf.Session()
+
+    tf_model_load(sess, '../tfmodels/cifar10_simple_model_epoch50')
+
+    validate_model(sess, x, y, model)
