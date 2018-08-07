@@ -50,6 +50,21 @@ def load_cifar10(augmented=False):
     else:
         return (x_train, y_train), (x_test, y_test)
 
+def filter_data(sess, x, y, model, x_test, y_test, target=None, batch_size=128, eval_size=1280):
+    pred = model.get_probs(x)
+    eval_single = tf.equal(tf.argmax(pred, axis=1), tf.argmax(y, axis=1))
+            
+    # only take the ones that are correctly classified by the target model
+    x_filtered = []
+    y_filtered = []
+    for i in range(eval_size):
+        correct = sess.run(eval_single, feed_dict={x: [x_test[i]], y: [y_test[i]]})
+        if np.argmax(y_test[i]) != target and correct:
+            x_filtered.append([x_test[i]])
+            y_filtered.append([y_test[i]])
+
+    return np.concatenate(x_filtered, axis=0), np.concatenate(y_filtered, axis=0)
+
 def train_cifar10_classifier(model_name, nb_epochs):
     rng = np.random.RandomState([2018, 8, 7])
 
@@ -275,6 +290,27 @@ def attack_classifier(sess, x, y, model, x_test, y_test, attack_method="fgsm", t
     adv_imgs = np.concatenate(adv_imgs, axis=0)
     return adv_imgs
 
+def backtracking(sess, x, y, model, x_test, y_test, params, batch_size=128):
+    from cleverhans.attacks import BasicIterativeMethod
+    method = BasicIterativeMethod(model, sess=sess)
+
+    adv_x = method.generate(x, **params)
+    num_batch = x_test.shape[0] // batch_size
+    adv_imgs = []
+    for i in range(num_batch):
+        if (i + 1)*batch_size >=  x_test.shape[0]:
+            x_feed = x_test[i*batch_size:]
+            y_feed = y_test[i*batch_size:]
+        else:
+            x_feed = x_test[i*batch_size:(i+1)*batch_size]
+            y_feed = y_test[i*batch_size:(i+1)*batch_size]
+            
+        adv_img = sess.run(adv_x, feed_dict={x: x_feed, y: y_feed})
+        adv_imgs.append(adv_img)
+
+    adv_imgs = np.concatenate(adv_imgs, axis = 0)
+    return adv_imgs
+
 if __name__ == '__main__':
     #train_cifar10_classifier('simple', 50)
     (x_train, y_train), (x_test, y_test) = load_cifar10()
@@ -285,9 +321,20 @@ if __name__ == '__main__':
     sess = tf.Session()
 
     tf_model_load(sess, '../tfmodels/cifar10_simple_model_epoch50')
+    x_filtered, y_filtered = filter_data(sess, x, y, model, x_test, y_test)
 
-    accuracy = validate_model(sess, x, y, model, x_test, y_test)
+    accuracy = validate_model(sess, x, y, model, x_filtered, y_filtered)
     print('Base accuracy of the target model on legitimate images: ' + str(accuracy))
-    adv_imgs = attack_classifier(sess, x, y, model, x_test, y_test, attack_method='basic_iterative')
-    accuracy = validate_model(sess, x, y, model, adv_imgs, y_test)
+
+    adv_imgs = attack_classifier(sess, x, y, model, x_filtered, y_filtered, attack_method='cw')
+    accuracy = validate_model(sess, x, y, model, adv_imgs, y_filtered)
     print('Base accuracy of the target model on adversarial images: ' + str(accuracy))
+
+    backtrack_params = {'eps': 8/255.,
+                        'eps_iter': 1/255.,
+                        'nb_iter': 10,
+                        'clip_min': 0.,
+                        'clip_max': 1.}
+    result_imgs = backtracking(sess, x, y, model, adv_imgs, y_filtered, backtrack_params)
+    accuracy = validate_model(sess, x, y, model, result_imgs, y_filtered)
+    print('Base accuracy of the target model on recovered images: ' + str(accuracy))
