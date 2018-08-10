@@ -50,23 +50,26 @@ def load_cifar10(augmented=False):
     else:
         return (x_train, y_train), (x_test, y_test)
 
-def filter_data(sess, x, y, model, x_test, y_test, target=None, batch_size=128, eval_size=1280):
+def filter_data(sess, x, y, model, x_test, y_test, target=None, batch_size=128, eval_size=1280, opposite=False):
     pred = model.get_probs(x)
     eval_single = tf.equal(tf.argmax(pred, axis=1), tf.argmax(y, axis=1))
             
     # only take the ones that are correctly classified by the target model
     x_filtered = []
     y_filtered = []
+    indices = []
     counter = 0
     for i in range(len(x_test)):
         correct = sess.run(eval_single, feed_dict={x: [x_test[i]], y: [y_test[i]]})
+        if opposite: correct = not correct
         if np.argmax(y_test[i]) != target and correct:
             x_filtered.append([x_test[i]])
             y_filtered.append([y_test[i]])
+            indices.append(i)
             counter += 1
         if counter >= eval_size: break
 
-    return np.concatenate(x_filtered, axis=0), np.concatenate(y_filtered, axis=0)
+    return np.concatenate(x_filtered, axis=0), np.concatenate(y_filtered, axis=0), np.array(indices)
 
 def train_cifar10_classifier(model_name, nb_epochs):
     rng = np.random.RandomState([2018, 8, 7])
@@ -135,8 +138,8 @@ def attack_classifier(sess, x, model, x_test, attack_method="fgsm", target=None,
         
     elif attack_method == "basic_iterative":
         from cleverhans.attacks import BasicIterativeMethod
-        params = {'eps': 8/255,
-                  'eps_iter': 1/255,
+        params = {'eps': 8./255,
+                  'eps_iter': 1./255,
                   'nb_iter': 10,
                   'clip_min': 0.,
                   'clip_max': 1.,
@@ -299,44 +302,100 @@ def backtracking(sess, x, model, x_test, params, batch_size=128):
     adv_imgs = []
     for i in range(num_batch):
         x_feed = x_test[i*batch_size:(i+1)*batch_size]
-        #y_feed = y_test[i*batch_size:(i+1)*batch_size]
-            
         adv_img = sess.run(adv_x, feed_dict={x: x_feed})
         adv_imgs.append(adv_img)
 
-    adv_imgs = np.concatenate(adv_imgs, axis = 0)
+    adv_imgs = np.concatenate(adv_imgs, axis=0)
+    return adv_imgs
+
+def eval_perturbation(p):
+    batch_num = len(p)
+    p_abs = np.abs(p)
+
+    l_one = np.sum(p_abs) / batch_num
+    l_two = np.sum(np.sqrt(np.sum(p ** 2, axis=(1, 2, 3)))) / batch_num
+    l_inf = np.sum(np.max(p_abs, axis=(1, 2, 3))) / batch_num
+    gavg = np.mean(p_abs)
+    gmax = np.max(p_abs)
+    gmin = np.min(p_abs)
+    print('%8.3f%8.3f%8.3f%8.3f%8.3f%8.3f' % (l_one, l_two, l_inf, gmax, gavg, gmin))
+
+def backtrack_v2(sess, x, model, adv_imgs, params):
+    logits = model.get_logits(x)
+    preds = tf.to_float(tf.equal(model.get_probs(x),
+                                 tf.reduce_max(model.get_probs(x), axis=1, keepdims=True)))
+    labels = sess.run(preds, feed_dict={x: adv_imgs})
+    loss = tf.nn.softmax_cross_entropy_with_logits_v2(logits=logits, labels=labels)
+
+    grad, = tf.gradients(loss, x)
+    norm = tf.sqrt(tf.reduce_sum(grad ** 2, axis=(1, 2, 3)))
+    adv_x = x + params['step_scale'] * tf.transpose(tf.transpose(grad, [1, 2, 3, 0]) / norm, [3, 0, 1, 2])
+
+    clip_base = tf.constant(adv_imgs)
+    adv_x = tf.clip_by_value(adv_x, clip_base - params['eps'], clip_base + params['eps'])
+    adv_x = tf.clip_by_value(adv_x, params['clip_min'], params['clip_max'])
+
+    start_imgs = adv_imgs
+    for i in range(params['nb_iter']):
+        adv_imgs = sess.run(adv_x, feed_dict={x: adv_imgs})
+
     return adv_imgs
 
 if __name__ == '__main__':
     #train_cifar10_classifier('simple', 50)
-    (x_train, y_train), (x_test, y_test) = load_cifar10()
 
+    # build graph
     x = tf.placeholder(tf.float32, shape=(None, 32, 32, 3))
     y = tf.placeholder(tf.float32, shape=(None, 10))
     model = make_simple_cnn()
+
+    # restore from pretrained
     sess = tf.Session()
-
     tf_model_load(sess, '../tfmodels/cifar10_simple_model_epoch50')
-    x_filtered, y_filtered = filter_data(sess, x, y, model, x_test, y_test)
 
+    # prepare data
+    (x_train, y_train), (x_test, y_test) = load_cifar10()
+    x_filtered, y_filtered, _ = filter_data(sess, x, y, model, x_test, y_test)
+
+    # make sure samples are all correctly predicted
     accuracy = validate_model(sess, x, y, model, x_filtered, y_filtered)
     print('Base accuracy of the target model on legitimate images: ' + str(accuracy))
 
-    target = 0
+    # initiate attack
+    target = None
     adv_imgs = attack_classifier(sess, x, model, x_filtered, attack_method='basic_iterative',
                                  target=target)
-    print(np.min(adv_imgs - x_filtered))
-    print(np.max(x_filtered))
-    print(np.max(adv_imgs))
+    assert np.min(adv_imgs) >= 0 and np.max(adv_imgs) <= 1
+
     accuracy = validate_model(sess, x, y, model, adv_imgs, y_filtered)
     print('Base accuracy of the target model on adversarial images: ' + str(accuracy))
+    print('Generated %d/%d adversarial images' % (int(len(adv_imgs) * (1 - accuracy) + 0.5), len(x_filtered)))
 
-    backtrack_params = {'eps': 8/255.,
-                        'eps_iter': 8/255.,
-                        'nb_iter': 1,
+    # filter successful attacked adversarial images
+    adv_imgs, y_filtered, indices = filter_data(sess, x, y, model, adv_imgs, y_filtered, opposite=True)
+    x_filtered = x_filtered[indices]
+
+    # recover
+    backtrack_params = {'eps': 8./255,
+                        'eps_iter': 8./255,
+                        'nb_iter': 100,
+                        'step_scale': 10,
                         'clip_min': 0.,
                         'clip_max': 1.,
-                        'ord': np.inf}
-    result_imgs = backtracking(sess, x, model, adv_imgs, backtrack_params)
+                        'ord': 2}
+    #result_imgs = backtracking(sess, x, model, adv_imgs, backtrack_params)
+    result_imgs = backtrack_v2(sess, x, model, adv_imgs, backtrack_params)
+
+    # manual linf clipping
+    #epsilon = 8./255
+    #linf_clipped = np.clip(result_imgs, adv_imgs - epsilon, adv_imgs + epsilon)
     accuracy = validate_model(sess, x, y, model, result_imgs, y_filtered)
-    print('Base accuracy of the target model on recovered images: ' + str(accuracy))
+    print('Recovery rate: ' + str(accuracy))
+
+    print('   %8s%8s%8s%8s%8s%8s' % ('l1', 'l2', 'linf', 'gmax', 'gavg', 'gmin'))
+    print('A-B', end=''); eval_perturbation(adv_imgs - x_filtered)
+    print('R-B', end=''); eval_perturbation(result_imgs - x_filtered)
+    print('R-A', end=''); eval_perturbation(result_imgs - adv_imgs)
+    #print('C-B', end=''); eval_perturbation(linf_clipped - x_filtered)
+    #print('C-A', end=''); eval_perturbation(linf_clipped - adv_imgs)
+
