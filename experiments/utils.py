@@ -50,7 +50,7 @@ def load_cifar10(augmented=False):
     else:
         return (x_train, y_train), (x_test, y_test)
 
-def filter_data(sess, x, y, model, x_test, y_test, target=None, batch_size=128, eval_size=1280, opposite=False):
+def filter_data(sess, x, y, model, x_test, y_test, target=None, eval_size=1280, opposite=False):
     pred = model.get_probs(x)
     eval_single = tf.equal(tf.argmax(pred, axis=1), tf.argmax(y, axis=1))
             
@@ -61,8 +61,7 @@ def filter_data(sess, x, y, model, x_test, y_test, target=None, batch_size=128, 
     counter = 0
     for i in range(len(x_test)):
         correct = sess.run(eval_single, feed_dict={x: [x_test[i]], y: [y_test[i]]})
-        if opposite: correct = not correct
-        if np.argmax(y_test[i]) != target and correct:
+        if np.argmax(y_test[i]) != target and (opposite ^ correct):
             x_filtered.append([x_test[i]])
             y_filtered.append([y_test[i]])
             indices.append(i)
@@ -103,7 +102,9 @@ def train_cifar10_classifier(model_name, nb_epochs):
         acc = model_eval(sess, x, y, preds, x_test, y_test, args=eval_params, feed={keep_prob: 1.0})
         print('Test accuracy on legitimate examples: %0.4f' % acc)
 
-    sess = tf.Session()
+    config = tf.ConfigProto()
+    config.gpu_options.allow_growth = True
+    sess = tf.Session(config=config)
     train(sess, loss, x, y, x_train, y_train, evaluate=evaluate,
           args=train_params, feed={keep_prob: 0.5}, rng=rng,
           var_list=model.get_params())
@@ -116,9 +117,7 @@ def train_cifar10_classifier(model_name, nb_epochs):
     saver.save(sess, os.path.join(savedir, model_savename))
 
 def validate_model(sess, x, y, model, x_test, y_test):
-    '''
-    Make sure the model load properly by running it against the test set
-    '''
+
     predictions = model.get_probs(x)
     eval_params = {'batch_size': 128}
     accuracy = model_eval(sess, x, y, predictions, X_test=x_test, Y_test=y_test, args=eval_params)
@@ -301,13 +300,109 @@ def backtracking(sess, x, model, x_test, params, batch_size=128):
     num_batch = x_test.shape[0] // batch_size
     adv_imgs = []
     for i in range(num_batch):
-        x_feed = x_test[i*batch_size:(i+1)*batch_size]
+        if i + 1 == num_batch:
+            x_feed = x_test[i*batch_size:]
+        else:
+            x_feed = x_test[i*batch_size:(i+1)*batch_size]
         adv_img = sess.run(adv_x, feed_dict={x: x_feed})
         adv_imgs.append(adv_img)
 
     adv_imgs = np.concatenate(adv_imgs, axis=0)
     return adv_imgs
 
+def backtrack_v2(sess, x, model, adv_imgs, params):
+
+    logits = model.get_logits(x)
+    probs = model.get_probs(x)
+    preds = tf.to_float(tf.equal(probs, tf.reduce_max(probs, axis=1, keepdims=True)))
+    labels = sess.run(preds, feed_dict={x: adv_imgs})
+    labels = tf.constant(labels)
+    loss = tf.nn.softmax_cross_entropy_with_logits_v2(logits=logits, labels=labels)
+
+    grad, = tf.gradients(loss, x)
+    if params['ord'] == 1:
+        norm = tf.reduce_sum(tf.abs(grad), axis=(1, 2, 3)) # L1
+        norm = tf.stop_gradient(norm)
+        normalized_grad = tf.transpose(tf.transpose(grad, [1, 2, 3, 0]) / norm, [3, 0, 1, 2])
+    elif params['ord'] == 2:
+        norm = tf.sqrt(tf.reduce_sum(grad ** 2, axis=(1, 2, 3))) # L2
+        norm = tf.stop_gradient(norm)
+        normalized_grad = tf.transpose(tf.transpose(grad, [1, 2, 3, 0]) / norm, [3, 0, 1, 2])
+    elif params['ord'] == np.inf:
+        norm = tf.constant(1. / params['eps_iter'])
+        grad = tf.stop_gradient(grad)
+        normalized_grad = tf.sign(grad) / norm
+    adv_x = x + params['step_scale'] * params['eps'] * normalized_grad
+
+    clip_base = tf.constant(adv_imgs)
+    adv_x = tf.clip_by_value(adv_x, clip_base - params['eps'], clip_base + params['eps'])
+    adv_x = tf.clip_by_value(adv_x, params['clip_min'], params['clip_max'])
+
+    for i in range(params['nb_iter']):
+        adv_imgs, loss_val, grad_val, norm_val, ng_val, logits_val = sess.run(
+            [adv_x, loss, grad, norm, normalized_grad, logits], feed_dict={x: adv_imgs})
+        print('Recovery iteration %d: ' % (i + 1))
+        print('  loss(avg)=%f, (min)=%f, (max)=%f' % \
+            (np.mean(loss_val), np.min(loss_val), np.max(loss_val)))
+        grad_val = np.abs(grad_val)
+        print('  grad(avg)=%f, (min)=%f, (max)=%f' % \
+            (np.mean(grad_val), np.min(grad_val), np.max(grad_val)))
+        print('  norm(avg)=%f, (min)=%f, (max)=%f' % \
+            (np.mean(norm_val), np.min(norm_val), np.max(norm_val)))
+        print('  ngra(avg)=%f, (min)=%f, (max)=%f' % \
+            (np.mean(ng_val), np.min(ng_val), np.max(ng_val)))
+        #print(norm_val.shape)
+        #n = np.argmin(norm_val)
+        #for n in range(len(adv_imgs)):
+        #    if norm_val[n] > 0: continue
+        #    print(n)
+        #    print(norm_val[n])
+        #    print(logits_val[n])
+        #    print(np.min(adv_imgs[n]), np.max(adv_imgs[n]))
+
+    return adv_imgs
+
+def backtrack_v3(sess, x, model, adv_imgs, params):
+    
+    logits = model.get_logits(x)
+    probs = model.get_probs(x)
+    preds = tf.to_float(tf.equal(probs, tf.reduce_max(probs, axis=1, keepdims=True)))
+    labels = sess.run(preds, feed_dict={x: adv_imgs})
+    labels = tf.constant(labels)
+    loss = tf.nn.softmax_cross_entropy_with_logits_v2(logits=logits, labels=labels)
+
+    grad, = tf.gradients(loss, x)
+
+    normalized_grad = tf.placeholder(tf.float32, [None, 32, 32, 3])
+    adv_x = x + params['step_scale'] * params['eps'] * normalized_grad
+    
+    clip_base = tf.constant(adv_imgs)
+    adv_x = tf.clip_by_value(adv_x, clip_base - params['eps'], clip_base + params['eps'])
+    adv_x = tf.clip_by_value(adv_x, params['clip_min'], params['clip_max'])
+
+    for i in range(params['nb_iter']):
+        grad_val = sess.run(grad, feed_dict={x: adv_imgs})
+        if params['ord'] == 1:
+            norm_val = np.sum(np.abs(grad_val), axis=(1, 2, 3))
+        elif params['ord'] == 2:
+            norm_val = np.sqrt(np.sum(grad_val ** 2, axis=(1, 2, 3)))
+        else:
+            raise NotImplementedError()
+        grad_val = np.transpose(grad_val, [1, 2, 3, 0])
+        ng_val = np.transpose(grad_val / norm_val, [3, 0, 1, 2])
+        adv_imgs = sess.run(adv_x, feed_dict={x: adv_imgs, normalized_grad: ng_val})
+
+        grad_val = np.abs(grad_val)
+        print('Recovery iteration %d: ' % (i + 1))
+        print('  grad(avg)=%f, (min)=%f, (max)=%f' % \
+            (np.mean(grad_val), np.min(grad_val), np.max(grad_val)))
+        print('  norm(avg)=%f, (min)=%f, (max)=%f' % \
+            (np.mean(norm_val), np.min(norm_val), np.max(norm_val)))
+        print('  ngra(avg)=%f, (min)=%f, (max)=%f' % \
+            (np.mean(ng_val), np.min(ng_val), np.max(ng_val)))
+
+    return adv_imgs
+    
 def eval_perturbation(p):
     batch_num = len(p)
     p_abs = np.abs(p)
@@ -319,46 +414,6 @@ def eval_perturbation(p):
     gmax = np.max(p_abs)
     gmin = np.min(p_abs)
     print('%8.3f%8.3f%8.3f%8.3f%8.3f%8.3f' % (l_one, l_two, l_inf, gmax, gavg, gmin))
-
-def backtrack_v2(sess, x, model, adv_imgs, params):
-
-    logits = model.get_logits(x)
-    preds = tf.to_float(tf.equal(model.get_probs(x), tf.reduce_max(model.get_probs(x), axis=1, keepdims=True)))
-    labels = sess.run(preds, feed_dict={x: adv_imgs})
-    labels = tf.constant(labels)
-    loss = tf.nn.softmax_cross_entropy_with_logits_v2(logits=logits, labels=labels)
-
-    grad, = tf.gradients(loss, x)
-    #norm = tf.sqrt(tf.reduce_sum(grad ** 2, axis=(1, 2, 3))) # L2
-    norm = tf.reduce_sum(tf.abs(grad), axis=(1,2,3)) # L1
-    normalized_grad = tf.transpose(tf.transpose(grad, [1, 2, 3, 0]) / norm, [3, 0, 1, 2])
-    adv_x = x + params['step_scale'] * normalized_grad
-
-    clip_base = tf.constant(adv_imgs)
-    adv_x = tf.clip_by_value(adv_x, clip_base - params['eps'], clip_base + params['eps'])
-    adv_x = tf.clip_by_value(adv_x, params['clip_min'], params['clip_max'])
-
-    start_imgs = adv_imgs
-    for i in range(params['nb_iter']):
-        adv_imgs, loss_val, grad_val, norm_val, logits_val = sess.run([adv_x, loss, grad, norm, logits], feed_dict={x: adv_imgs})
-        print('Recovery iteration %d: ' % (i + 1))
-        print('  loss(avg)=%f, (min)=%f, (max)=%f' % \
-            (np.mean(loss_val), np.min(loss_val), np.max(loss_val)))
-        grad_val = np.abs(grad_val)
-        print('  grad(avg)=%f, (min)=%f, (max)=%f' % \
-            (np.mean(grad_val), np.min(grad_val), np.max(grad_val)))
-        print('  norm(avg)=%f, (min)=%f, (max)=%f' % \
-            (np.mean(norm_val), np.min(norm_val), np.max(norm_val)))
-        #print(norm_val.shape)
-        #n = np.argmin(norm_val)
-        #for n in range(len(adv_imgs)):
-        #    if norm_val[n] > 0: continue
-        #    print(n)
-        #    print(norm_val[n])
-        #    print(logits_val[n])
-        #    print(np.min(adv_imgs[n]), np.max(adv_imgs[n]))
-
-    return adv_imgs
 
 def eval_adv(sess, x, model, adv_imgs, y_filtered):
     #adv_imgs += (np.random.rand(*adv_imgs.shape) > 0.5) - 0.5
@@ -403,6 +458,51 @@ def eval_adv(sess, x, model, adv_imgs, y_filtered):
             #print(np.argmax(labels[i]))
             #print(np.argmax(y_filtered[i]))
 
+def attack_and_recover(sess, x, y, x_benign, y_benign, model, target, attack_method,
+                       recover_method, recover_params, flip_image=False):
+
+    adv_imgs = attack_classifier(sess, x, model, x_benign, attack_method='basic_iterative',
+                                 target=target)
+    assert np.min(adv_imgs) >= 0 and np.max(adv_imgs) <= 1
+
+    accuracy = validate_model(sess, x, y, model, adv_imgs, y_benign)
+    print('Base accuracy of the target model on adversarial images: ' + str(accuracy))
+    print('Generated %d/%d adversarial images' % (int(len(adv_imgs) * (1 - accuracy) + 0.5), len(x_benign)))
+
+    # filter successful attacked adversarial images
+    adv_imgs, y_benign, indices = filter_data(sess, x, y, model, adv_imgs, y_benign,
+                                              opposite=True)
+    x_benign = x_benign[indices]
+
+    if flip_image:
+        adv_imgs = adv_imgs[:, :, ::-1, :]
+        x_benign = x_benign[:, :, ::-1, :]
+
+        flip_accuracy = validate_model(sess, x, y, model, adv_imgs, y_benign)
+        adv_imgs, y_benign, indices = filter_data(sess, x, y, model, adv_imgs, y_benign,
+                                                  opposite=True)
+        x_benign = x_benign[indices]
+        
+    if recover_method == 'fg':
+        #result_imgs = backtrack_v2(sess, x, model, adv_imgs, recover_params)
+        result_imgs = backtrack_v3(sess, x, model, adv_imgs, recover_params)
+    elif recover_method == 'fgs':
+        recover_params['ord'] = np.inf
+        result_imgs = backtracking(sess, x, model, adv_imgs, recover_params)
+    else:
+        raise NotImplementedError('Recover method should be fg or fgs')
+    
+    bt_accuracy = validate_model(sess, x, y, model, result_imgs, y_benign)
+    print('Recovery rate (flip only): ' + str(flip_accuracy))
+    print('Recovery rate (backtrack): ' + str(bt_accuracy))
+    print('Recovery rate (total)    : ' + str(flip_accuracy + (1 - flip_accuracy) * bt_accuracy))
+
+    print('   %8s%8s%8s%8s%8s%8s' % ('l1', 'l2', 'linf', 'gmax', 'gavg', 'gmin'))
+    print('A-B', end=''); eval_perturbation(adv_imgs - x_benign)
+    print('R-B', end=''); eval_perturbation(result_imgs - x_benign)
+    print('R-A', end=''); eval_perturbation(result_imgs - adv_imgs)
+
+    return x_benign, adv_imgs, result_imgs
 
 if __name__ == '__main__':
     #train_cifar10_classifier('simple', 50)
@@ -413,34 +513,41 @@ if __name__ == '__main__':
     model = make_simple_cnn()
 
     # restore from pretrained
-    sess = tf.Session()
+    config = tf.ConfigProto()
+    config.gpu_options.allow_growth = True
+    sess = tf.Session(config=config)
     tf_model_load(sess, '../tfmodels/cifar10_simple_model_epoch50')
 
     # prepare data
     (x_train, y_train), (x_test, y_test) = load_cifar10()
     x_filtered, y_filtered, _ = filter_data(sess, x, y, model, x_test, y_test)
 
-    # make sure samples are all correctly predicted
+    # make sure the model load properly by running it against the test set
     accuracy = validate_model(sess, x, y, model, x_filtered, y_filtered)
     print('Base accuracy of the target model on legitimate images: ' + str(accuracy))
 
     # initiate attack
-    target = 0 
-    adv_imgs = attack_classifier(sess, x, model, x_filtered, attack_method='basic_iterative',
-                                 target=target)
-    assert np.min(adv_imgs) >= 0 and np.max(adv_imgs) <= 1
+    target = None
+    attack_method = 'basic_iterative'
+    recover_method = 'fg'
+    recover_params = {'eps': 8./255,
+                      'eps_iter': 1./255,   # only used when ord=np.inf
+                      'nb_iter': 50,
+                      'step_scale': 1,
+                      'clip_min': 0.,
+                      'clip_max': 1.,
+                      'ord': 2}
+    benign_imgs, adv_imgs, result_imgs = \
+        attack_and_recover(sess, x, y, x_filtered, y_filtered, model, target,
+                           attack_method, recover_method, recover_params,
+                           flip_image=True)
+
 
     #adv_imgs = np.load('data.npy')
     
     #eval_adv(sess, x, model, adv_imgs, y_filtered)
 
-    accuracy = validate_model(sess, x, y, model, adv_imgs, y_filtered)
-    print('Base accuracy of the target model on adversarial images: ' + str(accuracy))
-    print('Generated %d/%d adversarial images' % (int(len(adv_imgs) * (1 - accuracy) + 0.5), len(x_filtered)))
 
-    # filter successful attacked adversarial images
-    adv_imgs, y_filtered, indices = filter_data(sess, x, y, model, adv_imgs, y_filtered, opposite=True)
-    x_filtered = x_filtered[indices]
 
     # smoothing
     '''
@@ -449,29 +556,10 @@ if __name__ == '__main__':
     restore = tf.image.resize_images(enlarge, [32, 32], method=tf.image.ResizeMethod.BILINEAR)
     adv_imgs = sess.run(restore, feed_dict={noisy: adv_imgs})
     '''
-    adv_imgs = adv_imgs[:, :, ::-1, :]
 
     # recover
-    backtrack_params = {'eps': 8./255,
-                        'eps_iter': 8./255,
-                        'nb_iter': 1,
-                        'step_scale': 1,
-                        'clip_min': 0.,
-                        'clip_max': 1.,
-                        'ord': 2}
-    #result_imgs = backtracking(sess, x, model, adv_imgs, backtrack_params)
-    result_imgs = backtrack_v2(sess, x, model, adv_imgs, backtrack_params)
 
-    x_filtered = x_filtered[:, :, ::-1, :]
 
     # manual linf clipping
     #epsilon = 8./255
     #linf_clipped = np.clip(result_imgs, adv_imgs - epsilon, adv_imgs + epsilon)
-    accuracy = validate_model(sess, x, y, model, result_imgs, y_filtered)
-    print('Recovery rate: ' + str(accuracy))
-
-    print('   %8s%8s%8s%8s%8s%8s' % ('l1', 'l2', 'linf', 'gmax', 'gavg', 'gmin'))
-    print('A-B', end=''); eval_perturbation(adv_imgs - x_filtered)
-    print('R-B', end=''); eval_perturbation(result_imgs - x_filtered)
-    print('R-A', end=''); eval_perturbation(result_imgs - adv_imgs)
-
