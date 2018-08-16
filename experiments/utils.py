@@ -27,7 +27,7 @@ def load_cifar10(augmented=False):
 
     y_train = keras.utils.to_categorical(y_train, 10)
     y_test = keras.utils.to_categorical(y_test, 10)
-                        
+
     x_train = x_train.astype('float32')
     x_test = x_test.astype('float32')
     x_train /= 255
@@ -50,17 +50,23 @@ def load_cifar10(augmented=False):
     else:
         return (x_train, y_train), (x_test, y_test)
 
-def filter_data(sess, x, y, model, x_test, y_test, target=None, eval_size=1280, opposite=False):
+def filter_data(sess, x, y, model, x_test, y_test, target=None, eval_size=1280, opposite=False,
+                labels=None):
     pred = model.get_probs(x)
     eval_single = tf.equal(tf.argmax(pred, axis=1), tf.argmax(y, axis=1))
-            
+
+    if labels is not None:
+        y_feed = labels
+    else:
+        y_feed = y_test
+
     # only take the ones that are correctly classified by the target model
     x_filtered = []
     y_filtered = []
     indices = []
     counter = 0
     for i in range(len(x_test)):
-        correct = sess.run(eval_single, feed_dict={x: [x_test[i]], y: [y_test[i]]})
+        correct = sess.run(eval_single, feed_dict={x: [x_test[i]], y: [y_feed[i]]})
         if np.argmax(y_test[i]) != target and (opposite ^ correct):
             x_filtered.append([x_test[i]])
             y_filtered.append([y_test[i]])
@@ -78,7 +84,7 @@ def train_cifar10_classifier(model_name, nb_epochs):
     x = tf.placeholder(tf.float32, shape=(None, 32, 32, 3))
     y = tf.placeholder(tf.float32, shape=(None, 10))
     keep_prob = tf.placeholder(tf.float32, ())
-    
+
     if model_name == 'simple':
         model = make_simple_cnn(keep_prob=keep_prob)
         train_params = {
@@ -124,7 +130,7 @@ def validate_model(sess, x, y, model, x_test, y_test):
     return accuracy
 
 def attack_classifier(sess, x, model, x_test, attack_method="fgsm", target=None, batch_size=128):
-    
+
     if attack_method == "fgsm":
         from cleverhans.attacks import FastGradientMethod
         params = {'eps': 8/255,
@@ -134,7 +140,7 @@ def attack_classifier(sess, x, model, x_test, attack_method="fgsm", target=None,
         if target is not None:
             params["y_target"] = tf.constant(np.repeat(np.eye(10)[target:target+1], batch_size, axis = 0))
         method = FastGradientMethod(model, sess=sess)
-        
+
     elif attack_method == "basic_iterative":
         from cleverhans.attacks import BasicIterativeMethod
         params = {'eps': 8./255,
@@ -147,7 +153,7 @@ def attack_classifier(sess, x, model, x_test, attack_method="fgsm", target=None,
         if target is not None:
             params["y_target"] = tf.constant(np.repeat(np.eye(10)[target:target+1], batch_size, axis = 0))
         method = BasicIterativeMethod(model,sess = sess)
-        
+
     elif attack_method == "momentum_iterative":
         from cleverhans.attacks import MomentumIterativeMethod
         params = {'eps':8/255,
@@ -159,7 +165,7 @@ def attack_classifier(sess, x, model, x_test, attack_method="fgsm", target=None,
         if target is not None:
             params["y_target"] = tf.constant(np.repeat(np.eye(10)[target:target+1], batch_size, axis = 0))
         method = MomentumIterativeMethod(model,sess = sess)
-        
+
     elif attack_method == "saliency":
         from cleverhans.attacks import SaliencyMapMethod
         params = {'theta':8/255,
@@ -169,7 +175,7 @@ def attack_classifier(sess, x, model, x_test, attack_method="fgsm", target=None,
                  }
         assert target is None
         method = SaliencyMapMethod(model,sess = sess)
-        
+
     elif attack_method == "virtual":
         from cleverhans.attacks import VirtualAdversarialMethod
         params = {'eps':8/255,
@@ -180,7 +186,7 @@ def attack_classifier(sess, x, model, x_test, attack_method="fgsm", target=None,
                  }
         assert target is None
         method = VirtualAdversarialMethod(model,sess = sess)
-        
+
     elif attack_method == "cw":
         from cleverhans.attacks import CarliniWagnerL2
         params = {
@@ -197,7 +203,7 @@ def attack_classifier(sess, x, model, x_test, attack_method="fgsm", target=None,
         if target is not None:
             params["y_target"] = tf.constant(np.repeat(np.eye(10)[target:target+1], batch_size, axis = 0))
         method = CarliniWagnerL2(model,sess = sess)
-    
+
     elif attack_method == "elastic_net":
         from cleverhans.attacks import ElasticNetMethod
         params = {
@@ -217,7 +223,7 @@ def attack_classifier(sess, x, model, x_test, attack_method="fgsm", target=None,
         if target is not None:
             params["y_target"] = tf.constant(np.repeat(np.eye(10)[target:target+1], batch_size, axis = 0))
         method = ElasticNetMethod(model,sess = sess)
-    
+
     elif attack_method == "deepfool":
         from cleverhans.attacks import DeepFool
         params = {
@@ -230,7 +236,7 @@ def attack_classifier(sess, x, model, x_test, attack_method="fgsm", target=None,
         }
         assert target is None
         method = DeepFool(model,sess = sess)
-        
+
     elif attack_method == "lbfgs":
         from cleverhans.attacks import LBFGS
         params = {
@@ -244,7 +250,7 @@ def attack_classifier(sess, x, model, x_test, attack_method="fgsm", target=None,
         assert target is not None
         params["y_target"] = tf.constant(np.repeat(np.eye(10)[target:target+1], batch_size, axis = 0))
         method = LBFGS(model,sess = sess)
-    
+
     elif attack_method == "madry":
         from cleverhans.attacks import MadryEtAl
         params = {'eps':8/255,
@@ -257,7 +263,7 @@ def attack_classifier(sess, x, model, x_test, attack_method="fgsm", target=None,
         if target is not None:
             params["y_target"] = tf.constant(np.repeat(np.eye(10)[target:target+1], batch_size, axis = 0))
         method = MadryEtAl(model, sess = sess)
-        
+
     elif attack_method == "SPSA":
         from cleverhans.attacks import SPSA
         params = {
@@ -275,20 +281,20 @@ def attack_classifier(sess, x, model, x_test, attack_method="fgsm", target=None,
             params["y_target"] = tf.constant(np.repeat(np.eye(10)[target:target+1], batch_size, axis = 0))
             params["is_targeted"] = True
         method = SPSA(model, sess = sess)
-        
+
     else:
         raise ValueError("Can not recognize this attack method: %s" % attack_method)
-    
+
     adv_x = method.generate(x, **params)
     num_batch = x_test.shape[0] // batch_size
     adv_imgs = []
     for i in range(num_batch):
         x_feed = x_test[i*batch_size:(i+1)*batch_size]
         #y_feed = y_test[i*batch_size:(i+1)*batch_size]
-            
+
         adv_img = sess.run(adv_x, feed_dict={x: x_feed})
         adv_imgs.append(adv_img)
-        
+
     adv_imgs = np.concatenate(adv_imgs, axis=0)
     return adv_imgs
 
@@ -363,7 +369,7 @@ def backtrack_v2(sess, x, model, adv_imgs, params):
     return adv_imgs
 
 def backtrack_v3(sess, x, model, adv_imgs, params):
-    
+
     logits = model.get_logits(x)
     probs = model.get_probs(x)
     preds = tf.to_float(tf.equal(probs, tf.reduce_max(probs, axis=1, keepdims=True)))
@@ -375,7 +381,8 @@ def backtrack_v3(sess, x, model, adv_imgs, params):
 
     normalized_grad = tf.placeholder(tf.float32, [None, 32, 32, 3])
     adv_x = x + params['step_scale'] * params['eps'] * normalized_grad
-    
+    #adv_x = x + 0.01 * tf.random_normal([len(adv_imgs), 32, 32, 3], stddev=2)
+
     clip_base = tf.constant(adv_imgs)
     adv_x = tf.clip_by_value(adv_x, clip_base - params['eps'], clip_base + params['eps'])
     adv_x = tf.clip_by_value(adv_x, params['clip_min'], params['clip_max'])
@@ -402,7 +409,7 @@ def backtrack_v3(sess, x, model, adv_imgs, params):
             (np.mean(ng_val), np.min(ng_val), np.max(ng_val)))
 
     return adv_imgs
-    
+
 def eval_perturbation(p):
     batch_num = len(p)
     p_abs = np.abs(p)
@@ -417,7 +424,7 @@ def eval_perturbation(p):
 
 def eval_adv(sess, x, model, adv_imgs, y_filtered):
     #adv_imgs += (np.random.rand(*adv_imgs.shape) > 0.5) - 0.5
-    adv_imgs = adv_imgs[:, :, ::-1, :] 
+    adv_imgs = adv_imgs[:, :, ::-1, :]
     probs = model.get_probs(x)
     preds = tf.to_float(tf.equal(probs,
                                  tf.reduce_max(probs,
@@ -473,16 +480,30 @@ def attack_and_recover(sess, x, y, x_benign, y_benign, model, target, attack_met
     adv_imgs, y_benign, indices = filter_data(sess, x, y, model, adv_imgs, y_benign,
                                               opposite=True)
     x_benign = x_benign[indices]
+    sample_num = len(adv_imgs)
 
     if flip_image:
+        probs = model.get_probs(x)
+        get_preds = tf.to_float(tf.equal(probs,
+                                         tf.reduce_max(probs,
+                                                       axis=1, keepdims=True)))
+        y_pred = sess.run(get_preds, feed_dict={x: adv_imgs})
+
         adv_imgs = adv_imgs[:, :, ::-1, :]
         x_benign = x_benign[:, :, ::-1, :]
 
-        flip_accuracy = validate_model(sess, x, y, model, adv_imgs, y_benign)
+        flip_direct = validate_model(sess, x, y, model, adv_imgs, y_benign)
+
+        x_flip, y_flip, _ = filter_data(sess, x, y, model, adv_imgs, y_benign, opposite=True,
+                                        labels=y_pred)
+        backtrack_ratio = 1 - len(x_flip) / float(sample_num)
+        flip_accuracy = validate_model(sess, x, y, model, x_flip, y_flip)
+
         adv_imgs, y_benign, indices = filter_data(sess, x, y, model, adv_imgs, y_benign,
-                                                  opposite=True)
+                                                  opposite=False, labels=y_pred)
+
         x_benign = x_benign[indices]
-        
+
     if recover_method == 'fg':
         #result_imgs = backtrack_v2(sess, x, model, adv_imgs, recover_params)
         result_imgs = backtrack_v3(sess, x, model, adv_imgs, recover_params)
@@ -491,11 +512,15 @@ def attack_and_recover(sess, x, y, x_benign, y_benign, model, target, attack_met
         result_imgs = backtracking(sess, x, model, adv_imgs, recover_params)
     else:
         raise NotImplementedError('Recover method should be fg or fgs')
-    
+
     bt_accuracy = validate_model(sess, x, y, model, result_imgs, y_benign)
-    print('Recovery rate (flip only): ' + str(flip_accuracy))
+    if flip_image:
+        print('Preds change rate by flip: ' + str(1 - backtrack_ratio))
+        print('Recovery rate (flip only): ' + str(flip_accuracy))
     print('Recovery rate (backtrack): ' + str(bt_accuracy))
-    print('Recovery rate (total)    : ' + str(flip_accuracy + (1 - flip_accuracy) * bt_accuracy))
+    if flip_image:
+        acc = (1 - backtrack_ratio) * flip_accuracy + backtrack_ratio * bt_accuracy
+        print('Recovery rate (total)    : ' + str(acc))
 
     print('   %8s%8s%8s%8s%8s%8s' % ('l1', 'l2', 'linf', 'gmax', 'gavg', 'gmin'))
     print('A-B', end=''); eval_perturbation(adv_imgs - x_benign)
@@ -532,8 +557,8 @@ if __name__ == '__main__':
     recover_method = 'fg'
     recover_params = {'eps': 8./255,
                       'eps_iter': 1./255,   # only used when ord=np.inf
-                      'nb_iter': 50,
-                      'step_scale': 1,
+                      'nb_iter': 100,
+                      'step_scale': 0.1,
                       'clip_min': 0.,
                       'clip_max': 1.,
                       'ord': 2}
@@ -544,7 +569,7 @@ if __name__ == '__main__':
 
 
     #adv_imgs = np.load('data.npy')
-    
+
     #eval_adv(sess, x, model, adv_imgs, y_filtered)
 
 
