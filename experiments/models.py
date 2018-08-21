@@ -5,6 +5,7 @@ from __future__ import unicode_literals
 
 import numpy as np
 import tensorflow as tf
+from tensorflow.python.training.moving_averages import assign_moving_average
 from cleverhans.model import Model
 
 class MLP(Model):
@@ -80,7 +81,7 @@ class Linear(Layer):
         self.output_shape = [batch_size, self.num_hid]
         init = tf.random_normal([dim, self.num_hid], dtype=tf.float32)
         init = init / tf.sqrt(1e-7 + tf.reduce_sum(tf.square(init), axis=0,
-                                                   keep_dims=True))
+                                                   keepdims=True))
         self.W = tf.Variable(init, name = "dense/kernel")
         self.b = tf.Variable(np.zeros((self.num_hid,)).astype('float32'), name = "dense/bias")
 
@@ -220,16 +221,44 @@ class Pooling(Layer):
     def get_params(self):
         return []
 
+class BatchNormalizationLayer(Layer):
+    def __init__(self, training, decay=0.9, eps=0.001):
+        self.training = training
+        self.decay = decay
+        self.eps = eps
+
+    def set_input_shape(self, shape):
+        self.input_shape = shape
+        self.moving_mean = tf.Variable(name='bn/mean', initial_value=tf.zeros(shape[-1:]),
+                                       trainable=False)
+        self.moving_var  = tf.Variable(name='bn/var',  initial_value=tf.ones(shape[-1:]),
+                                       trainable=False)
+        self.beta = tf.Variable(name='bn/beta', initial_value=tf.zeros(shape[-1:]))
+        self.gamma = tf.Variable(name='bn/gamma', initial_value=tf.ones(shape[-1:]))
+        self.output_shape = shape
+
+    def fprop(self, x):
+        def mean_var_with_update():
+            mean, var = tf.nn.moments(x, axes=(0, 1, 2))
+            with tf.control_dependencies([
+                assign_moving_average(self.moving_mean, mean, self.decay),
+                assign_moving_average(self.moving_var, var, self.decay)]):
+                return tf.identity(mean), tf.identity(var)
+        mean, var = tf.cond(self.training, mean_var_with_update,
+                            lambda: (self.moving_mean, self.moving_var))
+        x = tf.nn.batch_normalization(x, mean, var, self.beta, self.gamma, self.eps)
+        return x
+
+    def get_params(self):
+        return [self.moving_mean, self.moving_var, self.beta, self.gamma]
+
 class ResnetLayer(Layer):
     def __init__(self,
                  num_filters=16,
                  kernel_size=(3, 3),
-                 strides=(1, 1),
-                 activation=ReLU(),
-                 batch_normalization=True):
+                 strides=(1, 1)):
         self.__dict__.update(locals())
         del self.self
-
 
     def set_input_shape(self, shape):
         self.input_shape = shape
@@ -238,25 +267,18 @@ class ResnetLayer(Layer):
                            self.strides,
                            "SAME")
         self.conv.set_input_shape(shape)
-        if self.activation is not None:
-            self.activation.set_input_shape(self.conv.get_output_shape())
-            self.output_shape = self.activation.get_output_shape()
-        else:
-            self.output_shape = self.conv.get_output_shape()
+        self.output_shape = self.conv.get_output_shape()
 
     def fprop(self, x):
         x = self.conv.fprop(x)
-        if self.batch_normalization:
-            x = tf.layers.batch_normalization(x)
-        if self.activation is not None:
-            x = self.activation.fprop(x)
         return x
 
     def get_params(self):
         return [self.conv.kernels, self.conv.b]
 
 class ResnetBlock(Layer):
-    def __init__(self, num_filters, first_layer_not_first_stack=True):
+    def __init__(self, training, num_filters, first_layer_not_first_stack=True):
+        self.training = training
         self.num_filters = num_filters
         self.first_layer_not_first_stack = first_layer_not_first_stack
 
@@ -268,27 +290,31 @@ class ResnetBlock(Layer):
             strides = (1, 1)
         self.x1_1 = ResnetLayer(num_filters=self.num_filters, strides=strides)
         self.x1_1.set_input_shape(shape)
-        self.x1_2 = ResnetLayer(num_filters=self.num_filters, activation=None)
+        self.bn1_1 = BatchNormalizationLayer(self.training)
+        self.bn1_1.set_input_shape(self.x1_1.get_output_shape())
+        self.x1_2 = ResnetLayer(num_filters=self.num_filters)
         self.x1_2.set_input_shape(self.x1_1.get_output_shape())
+        self.bn1_2 = BatchNormalizationLayer(self.training)
+        self.bn1_2.set_input_shape(self.x1_2.get_output_shape())
         if self.first_layer_not_first_stack:
             self.x2_1 = ResnetLayer(num_filters=self.num_filters,
-                                  kernel_size=(1, 1),
-                                  strides=strides,
-                                  activation=None,
-                                  batch_normalization=False)
+                                    kernel_size=(1, 1),
+                                    strides=strides)
             self.x2_1.set_input_shape(shape)
         self.output_shape = self.x1_2.get_output_shape()
 
     def fprop(self, x):
-        x1 = self.x1_1.fprop(x)
-        x1 = self.x1_2.fprop(x1)
+        x1 = self.bn1_1.fprop(self.x1_1.fprop(x))
+        x1 = tf.nn.relu(x1)
+        x1 = self.bn1_2.fprop(self.x1_2.fprop(x1))
         x2 = self.x2_1.fprop(x) if self.first_layer_not_first_stack else x
         x = tf.add(x1, x2)
         x = tf.nn.relu(x)
         return x
 
     def get_params(self):
-        params = [self.x1_1.get_params(), self.x1_2.get_params()]
+        params = [self.x1_1.get_params(), self.x1_2.get_params(),
+                  self.bn1_1.get_params(), self.bn1_2.get_params()]
         if self.first_layer_not_first_stack: params.append(self.x2_1.get_params())
         return params
 
@@ -320,17 +346,20 @@ def make_simple_cnn(num_filters=64, num_classes=10,
     model = MLP(layers, input_shape)
     return model
 
-def make_resnet(depth=32, num_classes=10, input_shape=(None, 32, 32, 3)):
+def make_resnet(is_training, depth=32, num_classes=10, input_shape=(None, 32, 32, 3)):
     if (depth - 2) % 6 != 0:
         raise ValueError('depth should be 6n+2 (eg 20, 32, 44)')
     
     num_filters = 16
     num_res_blocks = int((depth - 2) / 6)
     
-    layers = [ResnetLayer()]
+    layers = [ResnetLayer(),
+              BatchNormalizationLayer(is_training),
+              ReLU()]
     for stack in range(3):
         for res_block in range(num_res_blocks):
-            layers.append(ResnetBlock(num_filters,
+            layers.append(ResnetBlock(is_training,
+                                      num_filters,
                                       stack > 0 and res_block == 0))
         num_filters *= 2
     layers.extend([Pooling('avg'),
